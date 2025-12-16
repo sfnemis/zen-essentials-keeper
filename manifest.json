@@ -8,6 +8,10 @@
     "storage",
     "menus"
   ],
+  "icons": {
+    "48": "icon.png",
+    "96": "icon.png"
+  },
   "browser_action": {
     "default_icon": {
       "48": "icon.png"
@@ -22,7 +26,14 @@
   },
   "browser_specific_settings": {
     "gecko": {
-      "strict_min_version": "100.0"
+      "id": "zen-essentials-keeper@sfnemis",
+      "strict_min_version": "100.0",
+      "data_collection_permissions": {
+        "required": [
+          "none"
+        ],
+        "optional": []
+      }
     }
   }
 }
