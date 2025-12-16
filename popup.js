@@ -1,83 +1,73 @@
 // popup.js
 
-const tabList = document.getElementById('tabList');
-const status = document.getElementById('status');
+const list = document.getElementById('tabList');
+const statusMsg = document.getElementById('status');
 
-// Helper to get domain/url key
-function getTabKey(url) {
-    // We use the full URL to be specific, but strip hash/query for better stability if needed.
-    // For now, let's use the full URL as that's most reliable for "specific page" requirements.
-    return url;
-}
+async function render() {
+    // Get saved config
+    const data = await browser.storage.local.get('protectedUrls');
+    const protectedUrls = data.protectedUrls || [];
 
-async function init() {
-    // 1. Get currently stored protected URLs
-    let storage = await browser.storage.local.get('protectedUrls');
-    let protectedUrls = storage.protectedUrls || [];
+    // Find our essentials (pinned tabs)
+    const tabs = await browser.tabs.query({ pinned: true });
 
-    // 2. Query all pinned tabs (Assuming Essentials are Pinned)
-    let tabs = await browser.tabs.query({ pinned: true });
-
-    if (tabs.length === 0) {
-        tabList.innerHTML = '<div class="empty-state">No pinned/essential tabs found.</div>';
+    list.innerHTML = '';
+    if (!tabs.length) {
+        list.innerHTML = '<div class="empty-state">No pinned tabs found yet.</div>';
         return;
     }
 
-    // 3. Render list
     tabs.forEach(tab => {
-        const item = document.createElement('div');
-        item.className = 'tab-item';
+        const row = document.createElement('div');
+        row.className = 'tab-item';
 
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         checkbox.className = 'tab-checkbox';
+        checkbox.checked = protectedUrls.includes(tab.url);
 
-        // Check if currently protected
-        if (protectedUrls.includes(tab.url)) {
-            checkbox.checked = true;
-        }
-
-        checkbox.addEventListener('change', (e) => toggleProtection(tab.url, e.target.checked));
+        checkbox.addEventListener('change', (e) => toggle(tab.url, e.target.checked));
 
         const info = document.createElement('div');
         info.className = 'tab-info';
 
         const title = document.createElement('span');
         title.className = 'tab-title';
-        title.textContent = tab.title;
+        title.innerText = tab.title;
 
-        const url = document.createElement('span');
-        url.className = 'tab-url';
-        url.textContent = tab.url;
+        // Just show the domain to keep it clean
+        const urlDisplay = document.createElement('span');
+        urlDisplay.className = 'tab-url';
+        try {
+            urlDisplay.innerText = new URL(tab.url).hostname;
+        } catch (e) {
+            urlDisplay.innerText = tab.url;
+        }
 
-        info.appendChild(title);
-        info.appendChild(url);
-        item.appendChild(checkbox);
-        item.appendChild(info);
-        tabList.appendChild(item);
+        info.append(title, urlDisplay);
+        row.append(checkbox, info);
+        list.appendChild(row);
     });
 }
 
-async function toggleProtection(url, isProtected) {
-    let storage = await browser.storage.local.get('protectedUrls');
-    let protectedUrls = storage.protectedUrls || [];
+async function toggle(url, active) {
+    let data = await browser.storage.local.get('protectedUrls');
+    let urls = data.protectedUrls || [];
 
-    if (isProtected) {
-        if (!protectedUrls.includes(url)) {
-            protectedUrls.push(url);
-        }
+    if (active) {
+        if (!urls.includes(url)) urls.push(url);
     } else {
-        protectedUrls = protectedUrls.filter(u => u !== url);
+        urls = urls.filter(u => u !== url);
     }
 
-    await browser.storage.local.set({ protectedUrls });
+    await browser.storage.local.set({ protectedUrls: urls });
 
-    // Feedback
-    status.textContent = 'Saved!';
-    setTimeout(() => status.textContent = '', 1500);
+    // Let user know it saved
+    statusMsg.innerText = 'Saved';
+    setTimeout(() => statusMsg.innerText = '', 1000);
 
-    // Notify background to update immediately
-    browser.runtime.sendMessage({ type: 'update_protection' });
+    // Sync with background
+    browser.runtime.sendMessage({ type: 'sync' });
 }
 
-document.addEventListener('DOMContentLoaded', init);
+document.addEventListener('DOMContentLoaded', render);

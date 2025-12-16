@@ -1,151 +1,104 @@
 // background.js
 
-// --- Core Helper Functions ---
-
-/**
- * Checks if a URL matches any of the user's protected URLs.
- * @param {string} url 
- * @param {string[]} protectedUrls 
- * @returns {boolean}
- */
-function isProtected(url, protectedUrls) {
-    if (!url || !protectedUrls) return false;
-    return protectedUrls.includes(url);
+function isProtected(url, list) {
+    if (!url || !list) return false;
+    return list.includes(url);
 }
 
-/**
- * Enforces protection on a tab:
- * 1. Sets autoDiscardable to false (prevents unload).
- * 2. Force reloads if the tab is currently discarded (automates startup load).
- * @param {object} tab 
- * @param {boolean} forceLoad - Whether to reload if discarded (e.g. on startup)
- */
-async function protectTab(tab, forceLoad = false) {
+// Locks a tab in memory and forces a refresh if needed
+async function lockTab(tab, forceReload = false) {
     try {
-        // Prevent unloading
         await browser.tabs.update(tab.id, { autoDiscardable: false });
-        console.log(`Protected tab: ${tab.id} - ${tab.url}`);
-
-        // Force load if needed (e.g. on browser startup)
-        // User requested explicit "refresh", so we reload even if not discarded.
-        if (forceLoad) {
-            console.log(`Force refreshing tab: ${tab.id}`);
+        // If we're starting up, give it a kick to make sure it loads
+        if (forceReload) {
             await browser.tabs.reload(tab.id);
         }
-    } catch (err) {
-        console.error(`Failed to protect tab ${tab.id}:`, err);
+        console.log(`Locked tab ${tab.id} (${tab.title})`);
+    } catch (e) {
+        console.error("Tab lock failed:", e);
     }
 }
 
-/**
- * Main function to scan all tabs and apply protection based on preferences.
- * @param {boolean} forceLoad - Whether to force reload discarded tabs (true on startup).
- */
-async function applyProtection(forceLoad = false) {
-    const storage = await browser.storage.local.get('protectedUrls');
-    const protectedUrls = storage.protectedUrls || [];
+async function scanTabs(forceReload = false) {
+    const data = await browser.storage.local.get('protectedUrls');
+    const urls = data.protectedUrls || [];
 
-    // We only care about pinned tabs as a proxy for "Essentials"
+    // We only care about pinned tabs since Zen essentials are pinned
     const tabs = await browser.tabs.query({ pinned: true });
 
     for (const tab of tabs) {
-        if (isProtected(tab.url, protectedUrls)) {
-            protectTab(tab, forceLoad);
+        if (isProtected(tab.url, urls)) {
+            lockTab(tab, forceReload);
         }
     }
 }
 
-// --- Event Listeners ---
-
-// 0. Initialize Context Menu (Robust)
-function createMenus() {
+// Setup the context menu
+function initMenu() {
     browser.menus.removeAll().then(() => {
         browser.menus.create({
-            id: "protect-tab",
+            id: "toggle-lock",
             title: "Prevent Unload (Essential)",
             contexts: ["tab"],
             type: "checkbox",
             checked: false
         });
-        console.log("Context menu (re)created.");
     });
 }
 
-browser.runtime.onInstalled.addListener(createMenus);
-browser.runtime.onStartup.addListener(createMenus);
+browser.runtime.onInstalled.addListener(initMenu);
+browser.runtime.onStartup.addListener(() => {
+    initMenu();
+    // On browser start, we want to force refresh anything that's protected
+    scanTabs(true);
+});
 
-// Sync the checkbox state when the menu is shown
+// Update menu state when opening context menu
 browser.menus.onShown.addListener(async (info, tab) => {
-    // Note: 'tab' might be the active tab, but 'info.pageUrl' or similar could be reliable.
-    // However, onShown gives us info.contexts but potentially not the tab ID if not clicked.
-    // Actually, onShown doesn't pass the tab in all browsers reliably for updating the menu *item* specifically for that tab context before click.
-    // But for a "tab" context menu, the `tab` parameter is the tab the menu was opened on.
+    if (!tab) return;
 
-    if (!tab) return; // specific to Firefox/Gecko
+    const data = await browser.storage.local.get('protectedUrls');
+    const urls = data.protectedUrls || [];
+    const isActive = isProtected(tab.url, urls);
 
-    const storage = await browser.storage.local.get('protectedUrls');
-    const protectedUrls = storage.protectedUrls || [];
-    const isProtectedUrl = isProtected(tab.url, protectedUrls);
-
-    // Update the menu item to match the current tab's state
-    browser.menus.update("protect-tab", {
-        checked: isProtectedUrl
-    });
-
-    // Also refreshing the menu UI needs `browser.menus.refresh()` in some cases, but update usually works.
+    browser.menus.update("toggle-lock", { checked: isActive });
     browser.menus.refresh();
 });
 
-
-// Handle Context Menu Clicks
+// Handle menu clicks
 browser.menus.onClicked.addListener(async (info, tab) => {
-    if (info.menuItemId === "protect-tab") {
-        const isProtectedNow = info.checked; // The new state after click
-        const url_to_toggle = tab.url;
+    if (info.menuItemId !== "toggle-lock") return;
 
-        let storage = await browser.storage.local.get('protectedUrls');
-        let protectedUrls = storage.protectedUrls || [];
+    const shouldLock = info.checked;
+    const url = tab.url;
 
-        if (isProtectedNow) {
-            // Add to protection
-            if (!protectedUrls.includes(url_to_toggle)) {
-                protectedUrls.push(url_to_toggle);
-                protectTab(tab, false); // Apply immediate protection
-            }
-        } else {
-            // Remove from protection
-            protectedUrls = protectedUrls.filter(u => u !== url_to_toggle);
-            // Note: We can't easily "un-protect" (set autoDiscardable back to true) without re-enabling discarding, 
-            // but usually we just stop enforcing it. For completeness, let's allow it to be discardable again.
-            browser.tabs.update(tab.id, { autoDiscardable: true });
+    let data = await browser.storage.local.get('protectedUrls');
+    let urls = data.protectedUrls || [];
+
+    if (shouldLock) {
+        if (!urls.includes(url)) {
+            urls.push(url);
+            lockTab(tab, false);
         }
-
-        await browser.storage.local.set({ protectedUrls });
-        console.log(`Protection toggled for ${url_to_toggle}: ${isProtectedNow}`);
+    } else {
+        urls = urls.filter(u => u !== url);
+        // Release the lock
+        browser.tabs.update(tab.id, { autoDiscardable: true });
     }
+
+    await browser.storage.local.set({ protectedUrls: urls });
 });
 
-// 1. On Startup: Force load protected tabs
-browser.runtime.onStartup.addListener(() => {
-    console.log("Extension started (browser startup). Applying protection and force-loading.");
-    applyProtection(true);
+browser.runtime.onMessage.addListener((msg) => {
+    if (msg.type === 'sync') scanTabs(false);
 });
 
-// 3. Listen for checks from the Popup
-browser.runtime.onMessage.addListener((message) => {
-    if (message.type === 'update_protection') {
-        applyProtection(false);
-    }
-});
-
-// 4. Listen for tab updates (navigation) to re-apply protection if URL matches
-browser.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-    if (changeInfo.status === 'complete' && tab.pinned) {
-        const storage = await browser.storage.local.get('protectedUrls');
-        const protectedUrls = storage.protectedUrls || [];
-
-        if (isProtected(tab.url, protectedUrls)) {
-            protectTab(tab, false);
+// Watch for navigation on pinned tabs to re-apply locks
+browser.tabs.onUpdated.addListener(async (id, change, tab) => {
+    if (change.status === 'complete' && tab.pinned) {
+        const data = await browser.storage.local.get('protectedUrls');
+        if (isProtected(tab.url, data.protectedUrls || [])) {
+            lockTab(tab, false);
         }
     }
 });
